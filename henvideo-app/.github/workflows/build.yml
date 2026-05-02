@@ -1,0 +1,51 @@
+name: Build HenVideo APK
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build APK (Preview)
+        run: eas build --platform android --profile preview --non-interactive
+
+      - name: Download APK
+        run: |
+          # Wait for build to complete and download
+          eas build:list --limit 1 --json > build_info.json
+          BUILD_ID=$(cat build_info.json | jq -r '.[0].id')
+          BUILD_URL=$(cat build_info.json | jq -r '.[0].artifacts.buildUrl')
+          if [ "$BUILD_URL" != "null" ]; then
+            curl -L -o henvideo.apk "$BUILD_URL"
+            echo "APK downloaded successfully"
+          fi
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: henvideo-apk
+          path: henvideo.apk
+          retention-days: 30
