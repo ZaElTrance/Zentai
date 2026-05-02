@@ -27,22 +27,6 @@
         "android.permission.ACCESS_NETWORK_STATE"
       ]
     },
-    "plugins": [
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "usesLibrary": "org.apache.http.legacy",
-            "enableProguardInReleaseBuilds": true
-          }
-        }
-      ]
-    ],
-    "extra": {
-      "eas": {
-        "projectId": "henvideo-app"
-      }
-    },
     "web": {
       "favicon": "./assets/favicon.png",
       "bundler": "metro"
