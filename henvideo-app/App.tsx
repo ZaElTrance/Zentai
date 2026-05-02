@@ -10,9 +10,18 @@ import {
   ActivityIndicator,
   SafeAreaView,
   ScrollView,
+  BackHandler,
+  Animated,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { StatusBar } from 'expo-status-bar';
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+const LOADING_TIMEOUT = 30000; // 30 secondes max pour le chargement
+const FOCUS_SCALE = 1.05; // Légère augmentation au focus
+const FOCUS_BORDER_WIDTH = 4; // Bordure épaisse pour TV
 
 // ============================================================================
 // TEST DATA - 5 videos for validation
@@ -68,7 +77,67 @@ const { width, height } = Dimensions.get('window');
 const IS_TV = Platform.isTV || false;
 
 // ============================================================================
-// WEBVIEW PLAYER SCREEN
+// FOCUSABLE WRAPPER - Composant avec focus TV ultra-visible
+// ============================================================================
+interface FocusableProps {
+  children: React.ReactNode;
+  style?: any;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  onPress: () => void;
+  testID?: string;
+}
+
+const Focusable: React.FC<FocusableProps> = ({
+  children,
+  style,
+  onFocus,
+  onBlur,
+  onPress,
+  testID
+}) => {
+  const [focused, setFocused] = useState(false);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.spring(scaleAnim, {
+      toValue: focused ? FOCUS_SCALE : 1,
+      friction: 8,
+      tension: 100,
+      useNativeDriver: true,
+    }).start();
+  }, [focused]);
+
+  return (
+    <TouchableOpacity
+      testID={testID}
+      style={[
+        style,
+        focused && styles.focusableFocused,
+      ]}
+      onPress={onPress}
+      onFocus={() => {
+        setFocused(true);
+        onFocus?.();
+      }}
+      onBlur={() => {
+        setFocused(false);
+        onBlur?.();
+      }}
+      activeOpacity={0.9}
+      hasTVPreferredFocus={false}
+    >
+      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+        {children}
+      </Animated.View>
+      {/* Indicateur de focus visible */}
+      {focused && <View style={styles.focusIndicator} />}
+    </TouchableOpacity>
+  );
+};
+
+// ============================================================================
+// WEBVIEW PLAYER SCREEN - Avec bouton retour accessible
 // ============================================================================
 interface WebViewPlayerProps {
   video: Video;
@@ -79,8 +148,40 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
   const webViewRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [timeoutReached, setTimeoutReached] = useState(false);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const backHandlerRef = useRef<any>(null);
 
   const videoUrl = `https://hanime.tv/videos/hentai/${video.slug}`;
+
+  // Gestion du bouton Back matériel (télécommande)
+  useEffect(() => {
+    backHandlerRef.current = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true; // Empêche la fermeture de l'app
+    });
+
+    return () => {
+      backHandlerRef.current?.remove();
+    };
+  }, [onBack]);
+
+  // Timeout pour le chargement
+  useEffect(() => {
+    timeoutRef.current = setTimeout(() => {
+      if (loading) {
+        setTimeoutReached(true);
+        setLoading(false);
+        setError('Délai de chargement dépassé (30s)');
+      }
+    }, LOADING_TIMEOUT);
+
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, [loading]);
 
   // Inject JavaScript for better TV experience
   const injectedJS = `
@@ -88,54 +189,79 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
       // Hide distracting elements
       const style = document.createElement('style');
       style.innerHTML = \`
-        .ad-container, .popup, .modal-overlay, .banner {
+        .ad-container, .popup, .modal-overlay, .banner, .adsbygoogle {
           display: none !important;
         }
         video {
           max-width: 100% !important;
         }
+        body {
+          overflow-x: hidden !important;
+        }
       \`;
       document.head.appendChild(style);
+
+      // Auto-play video if possible
+      setTimeout(() => {
+        const video = document.querySelector('video');
+        if (video) {
+          video.play().catch(() => {});
+        }
+      }, 2000);
     })();
     true;
   `;
 
+  const handleRetry = () => {
+    setError(null);
+    setTimeoutReached(false);
+    setLoading(true);
+    webViewRef.current?.reload();
+  };
+
   return (
     <View style={styles.playerContainer}>
-      {/* Header */}
+      {/* Header toujours visible */}
       <View style={styles.playerHeader}>
         <TouchableOpacity
-          style={styles.backButton}
+          style={[styles.backButton, styles.backButtonFocused]}
           onPress={onBack}
           activeOpacity={0.7}
         >
-          <Text style={styles.backButtonText}>← Retour</Text>
+          <Text style={styles.backButtonText}>← RETOUR BIBLIOTHÈQUE</Text>
         </TouchableOpacity>
         <Text style={styles.playerTitle} numberOfLines={1}>{video.title}</Text>
       </View>
 
-      {/* Loading */}
-      {loading && (
+      {/* Loading avec indicateur de progression */}
+      {loading && !timeoutReached && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#e50914" />
           <Text style={styles.loadingText}>Chargement Hanime.tv...</Text>
+          <Text style={styles.loadingSubtext}>{videoUrl}</Text>
+          <View style={styles.loadingBar}>
+            <View style={styles.loadingBarInner} />
+          </View>
         </View>
       )}
 
       {/* Error */}
       {error && (
         <View style={styles.errorOverlay}>
-          <Text style={styles.errorText}>❌ Erreur</Text>
+          <Text style={styles.errorIcon}>⚠️</Text>
+          <Text style={styles.errorText}>Erreur de chargement</Text>
           <Text style={styles.errorDetail}>{error}</Text>
           <TouchableOpacity
             style={styles.retryButton}
-            onPress={() => {
-              setError(null);
-              setLoading(true);
-              webViewRef.current?.reload();
-            }}
+            onPress={handleRetry}
           >
             <Text style={styles.retryButtonText}>Réessayer</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.backLink}
+            onPress={onBack}
+          >
+            <Text style={styles.backLinkText}>← Retour à la bibliothèque</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -146,9 +272,28 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
           ref={webViewRef}
           source={{ uri: videoUrl }}
           style={styles.webView}
-          onLoadStart={() => setLoading(true)}
-          onLoadEnd={() => setLoading(false)}
-          onError={(e) => setError(e.nativeEvent.description)}
+          onLoadStart={() => {
+            setLoading(true);
+            setTimeoutReached(false);
+          }}
+          onLoadEnd={() => {
+            setLoading(false);
+            if (timeoutRef.current) {
+              clearTimeout(timeoutRef.current);
+            }
+          }}
+          onError={(e) => {
+            setError(e.nativeEvent.description);
+            setLoading(false);
+          }}
+          onHttpError={(e) => {
+            if (e.nativeEvent.statusCode === 404) {
+              setError('Page non trouvée (404)');
+            } else {
+              setError(`Erreur HTTP: ${e.nativeEvent.statusCode}`);
+            }
+            setLoading(false);
+          }}
           injectedJavaScript={injectedJS}
           javaScriptEnabled={true}
           domStorageEnabled={true}
@@ -157,6 +302,8 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
           allowsFullscreenVideo={true}
           startInLoadingState={true}
           userAgent="Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 Chrome/91.0.4472.120 Safari/537.36"
+          cacheEnabled={true}
+          incognito={false}
         />
       ) : (
         /* Web fallback - iframe for browser testing */
@@ -170,61 +317,92 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
         </View>
       )}
 
-      {/* Controls hint */}
+      {/* Controls hint - Toujours visible en bas */}
       <View style={styles.controlsHint}>
-        <Text style={styles.controlsText}>
-          🎮 Appuyez sur ← Retour pour revenir à la bibliothèque
-        </Text>
+        <View style={styles.controlsHintInner}>
+          <Text style={styles.controlsText}>
+            🎮 Télécommande: Bouton ← RETOUR pour revenir | OK pour sélectionner
+          </Text>
+        </View>
       </View>
     </View>
   );
 };
 
 // ============================================================================
-// VIDEO CARD COMPONENT
+// VIDEO CARD COMPONENT - Avec focus TV ultra-visible
 // ============================================================================
 interface VideoCardProps {
   video: Video;
   onSelect: () => void;
+  index: number;
 }
 
-const VideoCard: React.FC<VideoCardProps> = ({ video, onSelect }) => {
+const VideoCard: React.FC<VideoCardProps> = ({ video, onSelect, index }) => {
   const [focused, setFocused] = useState(false);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.spring(scaleAnim, {
+      toValue: focused ? 1.08 : 1,
+      friction: 8,
+      tension: 100,
+      useNativeDriver: true,
+    }).start();
+  }, [focused]);
 
   return (
     <TouchableOpacity
-      style={[styles.videoCard, focused && styles.videoCardFocused]}
+      style={[
+        styles.videoCard,
+        focused && styles.videoCardFocused
+      ]}
       onPress={onSelect}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
-      activeOpacity={0.8}
+      activeOpacity={0.9}
+      hasTVPreferredFocus={index === 0}
     >
-      {/* Thumbnail */}
-      <View style={styles.thumbnail}>
-        <Text style={styles.thumbnailIcon}>🎬</Text>
-        <View style={styles.ratingBadge}>
-          <Text style={styles.ratingText}>⭐ {video.rating}</Text>
-        </View>
-      </View>
-
-      {/* Info */}
-      <View style={styles.cardInfo}>
-        <Text style={styles.cardTitle} numberOfLines={2}>{video.title}</Text>
-        <Text style={styles.cardViews}>{(video.views / 1000000).toFixed(1)}M vues</Text>
-        <View style={styles.cardTags}>
-          {video.tags.slice(0, 2).map((tag, i) => (
-            <View key={i} style={styles.miniTag}>
-              <Text style={styles.miniTagText}>{tag}</Text>
+      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+        {/* Thumbnail */}
+        <View style={styles.thumbnail}>
+          <Text style={styles.thumbnailIcon}>🎬</Text>
+          <View style={styles.ratingBadge}>
+            <Text style={styles.ratingText}>⭐ {video.rating}</Text>
+          </View>
+          {focused && (
+            <View style={styles.playOverlay}>
+              <Text style={styles.playIcon}>▶</Text>
             </View>
-          ))}
+          )}
         </View>
-      </View>
+
+        {/* Info */}
+        <View style={styles.cardInfo}>
+          <Text style={styles.cardTitle} numberOfLines={2}>{video.title}</Text>
+          <Text style={styles.cardViews}>{(video.views / 1000000).toFixed(1)}M vues</Text>
+          <View style={styles.cardTags}>
+            {video.tags.slice(0, 2).map((tag, i) => (
+              <View key={i} style={styles.miniTag}>
+                <Text style={styles.miniTagText}>{tag}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      </Animated.View>
+
+      {/* Indicateur de focus ultra-visible */}
+      {focused && (
+        <View style={styles.cardFocusGlow} pointerEvents="none">
+          <Text style={styles.focusedLabel}>APPUYEZ POUR LIRE</Text>
+        </View>
+      )}
     </TouchableOpacity>
   );
 };
 
 // ============================================================================
-// TAG CHIP COMPONENT
+// TAG CHIP COMPONENT - Avec focus visible
 // ============================================================================
 interface TagChipProps {
   tag: string;
@@ -233,13 +411,25 @@ interface TagChipProps {
 }
 
 const TagChip: React.FC<TagChipProps> = ({ tag, selected, onToggle }) => {
+  const [focused, setFocused] = useState(false);
+
   return (
     <TouchableOpacity
-      style={[styles.tagChip, selected && styles.tagChipSelected]}
+      style={[
+        styles.tagChip,
+        selected && styles.tagChipSelected,
+        focused && styles.tagChipFocused,
+      ]}
       onPress={onToggle}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
       activeOpacity={0.7}
     >
-      <Text style={[styles.tagChipText, selected && styles.tagChipTextSelected]}>
+      <Text style={[
+        styles.tagChipText,
+        selected && styles.tagChipTextSelected,
+        focused && { fontWeight: 'bold' }
+      ]}>
         {tag}
       </Text>
     </TouchableOpacity>
@@ -329,10 +519,11 @@ const HomeScreen: React.FC = () => {
           data={filteredVideos}
           keyExtractor={(item) => item.id}
           numColumns={2}
-          renderItem={({ item }) => (
+          renderItem={({ item, index }) => (
             <VideoCard
               video={item}
               onSelect={() => setSelectedVideo(item)}
+              index={index}
             />
           )}
           contentContainerStyle={styles.videoGrid}
@@ -346,9 +537,12 @@ const HomeScreen: React.FC = () => {
         />
       </View>
 
-      {/* Footer */}
+      {/* Footer avec instructions TV */}
       <View style={styles.footer}>
         <Text style={styles.footerText}>
+          🎮 Navigation: Flèches pour bouger | OK pour sélectionner | RETOUR pour quitter
+        </Text>
+        <Text style={styles.footerSubtext}>
           {Platform.OS === 'web' ? '🌐 Web' : Platform.OS === 'android' ? '🤖 Android' : '📱 iOS'}
           {IS_TV && ' • 📺 TV Optimisé'}
         </Text>
@@ -358,12 +552,33 @@ const HomeScreen: React.FC = () => {
 };
 
 // ============================================================================
-// STYLES
+// STYLES - Optimisés pour TV
 // ============================================================================
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0a0a0a',
+  },
+
+  // Focus styles
+  focusableFocused: {
+    borderColor: '#e50914',
+    borderWidth: FOCUS_BORDER_WIDTH,
+    shadowColor: '#e50914',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 15,
+    elevation: 10,
+  },
+  focusIndicator: {
+    position: 'absolute',
+    top: -2,
+    left: -2,
+    right: -2,
+    bottom: -2,
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: '#e50914',
   },
 
   // Header
@@ -375,7 +590,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#333',
   },
   logo: {
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: 'bold',
     color: '#e50914',
   },
@@ -389,13 +604,16 @@ const styles = StyleSheet.create({
     right: 20,
     top: 25,
     backgroundColor: '#2a2a2a',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#4ade80',
   },
   tvBadgeText: {
     color: '#4ade80',
     fontSize: 12,
+    fontWeight: 'bold',
   },
 
   // Tags
@@ -407,7 +625,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '600',
     paddingHorizontal: 20,
     marginBottom: 10,
@@ -416,14 +634,22 @@ const styles = StyleSheet.create({
     paddingLeft: 15,
   },
   tagChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 25,
     backgroundColor: '#333',
     marginRight: 8,
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
   tagChipSelected: {
     backgroundColor: '#e50914',
+    borderColor: '#ff6b6b',
+  },
+  tagChipFocused: {
+    borderColor: '#fff',
+    backgroundColor: '#444',
+    transform: [{ scale: 1.1 }],
   },
   tagChipText: {
     color: '#fff',
@@ -433,9 +659,9 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   clearButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 25,
     backgroundColor: '#444',
     marginRight: 15,
   },
@@ -455,14 +681,19 @@ const styles = StyleSheet.create({
   videoCard: {
     width: (width - 30) / 2,
     margin: 5,
-    borderRadius: 8,
+    borderRadius: 12,
     backgroundColor: '#1a1a1a',
     overflow: 'hidden',
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: 'transparent',
   },
   videoCardFocused: {
     borderColor: '#e50914',
+    shadowColor: '#e50914',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 20,
+    elevation: 15,
   },
   thumbnail: {
     aspectRatio: 16 / 9,
@@ -472,34 +703,48 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   thumbnailIcon: {
-    fontSize: 40,
+    fontSize: 45,
   },
   ratingBadge: {
     position: 'absolute',
     top: 5,
     right: 5,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 4,
   },
   ratingText: {
     color: '#ffd700',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 'bold',
   },
+  playOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(229, 9, 20, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  playIcon: {
+    fontSize: 50,
+    color: '#fff',
+  },
   cardInfo: {
-    padding: 10,
+    padding: 12,
   },
   cardTitle: {
     color: '#fff',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
     marginBottom: 4,
   },
   cardViews: {
     color: '#666',
-    fontSize: 11,
+    fontSize: 12,
     marginBottom: 6,
   },
   cardTags: {
@@ -507,14 +752,28 @@ const styles = StyleSheet.create({
   },
   miniTag: {
     backgroundColor: '#333',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 4,
     marginRight: 4,
   },
   miniTagText: {
     color: '#888',
     fontSize: 10,
+  },
+  cardFocusGlow: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(229, 9, 20, 0.9)',
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  focusedLabel: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
   },
 
   // Empty
@@ -523,21 +782,29 @@ const styles = StyleSheet.create({
     paddingVertical: 50,
   },
   emptyIcon: {
-    fontSize: 50,
+    fontSize: 60,
     marginBottom: 10,
   },
   emptyText: {
     color: '#666',
-    fontSize: 16,
+    fontSize: 18,
   },
 
   // Footer
   footer: {
-    padding: 10,
+    padding: 15,
     backgroundColor: '#1a1a1a',
     alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#333',
   },
   footerText: {
+    color: '#888',
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  footerSubtext: {
     color: '#555',
     fontSize: 11,
   },
@@ -550,35 +817,39 @@ const styles = StyleSheet.create({
   playerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 15,
-    paddingTop: Platform.OS === 'web' ? 15 : 45,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
+    padding: 20,
+    paddingTop: Platform.OS === 'web' ? 20 : 50,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    borderBottomWidth: 2,
+    borderBottomColor: '#e50914',
+    zIndex: 100,
   },
   backButton: {
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 5,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
     backgroundColor: '#333',
-    marginRight: 15,
+    marginRight: 20,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  backButtonFocused: {
+    borderColor: '#e50914',
+    backgroundColor: '#444',
   },
   backButtonText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 16,
+    fontWeight: 'bold',
   },
   playerTitle: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '600',
     flex: 1,
   },
   webView: {
     flex: 1,
-    marginTop: Platform.OS === 'web' ? 0 : 70,
   },
   loadingOverlay: {
     position: 'absolute',
@@ -586,15 +857,34 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.9)',
+    backgroundColor: 'rgba(0,0,0,0.95)',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 20,
+    zIndex: 50,
   },
   loadingText: {
     color: '#fff',
-    marginTop: 15,
-    fontSize: 14,
+    marginTop: 20,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  loadingSubtext: {
+    color: '#666',
+    marginTop: 8,
+    fontSize: 11,
+  },
+  loadingBar: {
+    width: 200,
+    height: 4,
+    backgroundColor: '#333',
+    borderRadius: 2,
+    marginTop: 20,
+    overflow: 'hidden',
+  },
+  loadingBarInner: {
+    width: '60%',
+    height: '100%',
+    backgroundColor: '#e50914',
   },
   errorOverlay: {
     position: 'absolute',
@@ -602,49 +892,63 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.9)',
+    backgroundColor: 'rgba(0,0,0,0.95)',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 20,
-    padding: 20,
+    zIndex: 50,
+    padding: 30,
+  },
+  errorIcon: {
+    fontSize: 60,
+    marginBottom: 15,
   },
   errorText: {
     color: '#e50914',
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: 'bold',
     marginBottom: 10,
   },
   errorDetail: {
     color: '#888',
-    fontSize: 12,
+    fontSize: 14,
     textAlign: 'center',
-    marginBottom: 20,
+    marginBottom: 25,
   },
   retryButton: {
-    paddingHorizontal: 25,
-    paddingVertical: 12,
+    paddingHorizontal: 30,
+    paddingVertical: 15,
     backgroundColor: '#e50914',
-    borderRadius: 5,
+    borderRadius: 8,
+    marginBottom: 15,
   },
   retryButtonText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: 'bold',
+  },
+  backLink: {
+    padding: 10,
+  },
+  backLinkText: {
+    color: '#888',
+    fontSize: 14,
   },
   controlsHint: {
     position: 'absolute',
-    bottom: 20,
+    bottom: 0,
     left: 0,
     right: 0,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    padding: 10,
+    zIndex: 100,
+  },
+  controlsHintInner: {
     alignItems: 'center',
   },
   controlsText: {
-    color: '#666',
-    fontSize: 12,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 5,
+    color: '#aaa',
+    fontSize: 13,
+    textAlign: 'center',
   },
 });
 
