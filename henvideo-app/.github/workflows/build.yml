@@ -3,9 +3,18 @@ name: Build HenVideo APK
 on:
   push:
     branches: [main, master]
-  pull_request:
-    branches: [main, master]
+    paths:
+      - 'henvideo-app/**'
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Type de build'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - production
 
 jobs:
   build:
@@ -27,25 +36,51 @@ jobs:
           token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Install dependencies
+        working-directory: ./henvideo-app
         run: npm install
 
-      - name: Build APK (Preview)
-        run: eas build --platform android --profile preview --non-interactive
+      - name: Build APK
+        working-directory: ./henvideo-app
+        run: eas build --platform android --profile ${{ github.event.inputs.build_type || 'preview' }} --non-interactive --wait
+
+      - name: Get Build URL
+        id: build-url
+        working-directory: ./henvideo-app
+        run: |
+          BUILD_INFO=$(eas build:list --limit 1 --json)
+          BUILD_URL=$(echo "$BUILD_INFO" | jq -r '.[0].artifacts.buildUrl')
+          BUILD_ID=$(echo "$BUILD_INFO" | jq -r '.[0].id')
+          echo "build_url=$BUILD_URL" >> $GITHUB_OUTPUT
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "### 📱 Build terminé!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build ID:** $BUILD_ID" >> $GITHUB_STEP_SUMMARY
+          echo "- **Download:** $BUILD_URL" >> $GITHUB_STEP_SUMMARY
 
       - name: Download APK
+        working-directory: ./henvideo-app
         run: |
-          # Wait for build to complete and download
-          eas build:list --limit 1 --json > build_info.json
-          BUILD_ID=$(cat build_info.json | jq -r '.[0].id')
-          BUILD_URL=$(cat build_info.json | jq -r '.[0].artifacts.buildUrl')
-          if [ "$BUILD_URL" != "null" ]; then
-            curl -L -o henvideo.apk "$BUILD_URL"
-            echo "APK downloaded successfully"
-          fi
+          curl -L -o henvideo.apk "${{ steps.build-url.outputs.build_url }}"
+          ls -la henvideo.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: henvideo-apk
-          path: henvideo.apk
+          name: henvideo-apk-${{ github.sha }}
+          path: henvideo-app/henvideo.apk
           retention-days: 30
+
+  notify:
+    needs: build
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Create summary
+        run: |
+          echo "## ✅ HenVideo Build Ready!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📥 **Télécharger l'APK:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Va dans **Actions** > Ce workflow > **Artifacts**" >> $GITHUB_STEP_SUMMARY
+          echo "2. Télécharge \`henvideo-apk-*\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Installe sur l'émulateur Android TV" >> $GITHUB_STEP_SUMMARY
