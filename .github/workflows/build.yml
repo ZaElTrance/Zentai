@@ -1,4 +1,4 @@
-name: Build HenVideo APK (Local)
+name: Build HenVideo APK (Optimized)
 
 on:
   push:
@@ -6,6 +6,9 @@ on:
     paths:
       - 'henvideo-app/**'
   workflow_dispatch:
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true"
 
 jobs:
   build:
@@ -19,32 +22,47 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'henvideo-app/package-lock.json'
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup EAS
-        uses: expo/expo-github-action@v8
+      - name: Cache Gradle
+        uses: actions/cache@v4
         with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            henvideo-app/android/.gradle
+            henvideo-app/android/app/build
+          key: gradle-${{ hashFiles('henvideo-app/android/**/*.gradle*', 'henvideo-app/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: henvideo-app/node_modules
+          key: node-${{ hashFiles('henvideo-app/package-lock.json') }}
+          restore-keys: node-
 
       - name: Install dependencies
         working-directory: ./henvideo-app
-        run: npm install
+        run: npm ci --prefer-offline
 
-      - name: Build APK locally
+      - name: Build APK
         working-directory: ./henvideo-app
         run: |
-          npx expo prebuild --platform android
+          npx expo prebuild --platform android --no-install
           cd android
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease --parallel --build-cache
           mv app/build/outputs/apk/release/app-release.apk ../henvideo.apk
 
       - name: Upload APK Artifact
@@ -56,9 +74,5 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## ✅ HenVideo Build Ready!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📥 **Télécharger l'APK:**" >> $GITHUB_STEP_SUMMARY
-          echo "1. Va dans **Artifacts**" >> $GITHUB_STEP_SUMMARY
-          echo "2. Télécharge \`henvideo-apk-*\`" >> $GITHUB_STEP_SUMMARY
-          echo "3. Installe sur l'émulateur Android TV" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Build Ready!" >> $GITHUB_STEP_SUMMARY
+          echo "Télécharge l'APK dans Artifacts" >> $GITHUB_STEP_SUMMARY
