@@ -27,6 +27,9 @@
         "android.permission.ACCESS_NETWORK_STATE"
       ]
     },
+    "plugins": [
+      "./androidtv-plugin.js"
+    ],
     "web": {
       "favicon": "./assets/favicon.png",
       "bundler": "metro"
