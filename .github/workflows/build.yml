@@ -70,11 +70,11 @@ jobs:
           ./gradlew assembleRelease --no-daemon --parallel
 
       - name: Rename APK
-        run: mv henvideo-app/android/app/build/outputs/apk/release/app-release.apk henvideo-app/HenVideo-v2.apk
+        run: mv henvideo-app/android/app/build/outputs/apk/release/app-release.apk henvideo-app/HenVideo-v4-release.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: HenVideo-APK
-          path: henvideo-app/HenVideo-v2.apk
+          path: henvideo-app/HenVideo-v4-release.apk
           retention-days: 30

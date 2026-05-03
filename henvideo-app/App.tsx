@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,23 +8,51 @@ import {
   Dimensions,
   Platform,
   ActivityIndicator,
-  // SafeAreaView removed - deprecated on Android TV edge-to-edge (API 36)
   ScrollView,
   BackHandler,
   Animated,
+  Easing,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { StatusBar } from 'expo-status-bar';
 
 // ============================================================================
-// CONFIGURATION
+// CONFIGURATION — Netflix/Plex-inspired TV design tokens
 // ============================================================================
-const LOADING_TIMEOUT = 30000; // 30 secondes max pour le chargement
-const FOCUS_SCALE = 1.05; // Légère augmentation au focus
-const FOCUS_BORDER_WIDTH = 4; // Bordure épaisse pour TV
+const LOADING_TIMEOUT = 30000;
+const FOCUS_SCALE_CARD = 1.12;       // Card zoom on focus (Netflix uses ~1.10)
+const FOCUS_SCALE_TAG = 1.15;        // Tag chip zoom on focus
+const FOCUS_BORDER_WIDTH = 4;        // Border thickness (Android TV guideline)
+const LONG_PRESS_DURATION = 500;     // Long-press threshold (ms)
+const ANIM_DURATION = 200;           // Animation duration (ms)
+const CARD_BORDER_RADIUS = 14;
+
+const { width, height } = Dimensions.get('window');
+const IS_TV = Platform.isTV || false;
 
 // ============================================================================
-// TEST DATA - 5 videos for validation
+// DESIGN TOKENS — Inspired by Netflix (#E50914) / Plex (#E5A00D)
+// ============================================================================
+const COLORS = {
+  bg: '#0A0A0A',               // Deep black background
+  surface: '#141414',           // Card/surface background
+  surfaceLight: '#1E1E1E',      // Elevated surface
+  surfaceHover: '#2A2A2A',      // Hover/focus surface
+  primary: '#E50914',           // Netflix red accent
+  primaryLight: '#FF4D58',      // Lighter red for glow
+  gold: '#FFD700',              // Rating gold
+  white: '#FFFFFF',
+  textPrimary: '#F5F5F5',       // Primary text
+  textSecondary: '#A0A0A0',     // Secondary text
+  textMuted: '#666666',         // Muted text
+  border: '#333333',            // Subtle border
+  selected: '#E50914',          // Selected state
+  multiSelect: '#1CE783',       // Hulu green for multi-select mode
+  multiSelectBg: 'rgba(28,231,131,0.12)',
+};
+
+// ============================================================================
+// TEST DATA
 // ============================================================================
 const TEST_VIDEOS = [
   {
@@ -67,77 +95,404 @@ const TEST_VIDEOS = [
     views: 1500000,
     rating: 9.4,
   },
+  {
+    id: '6',
+    title: ' Overflow Ep. 1',
+    slug: 'overflow-1',
+    tags: ['comedy', 'harem', 'school', 'romance'],
+    views: 720000,
+    rating: 8.5,
+  },
+  {
+    id: '7',
+    title: 'Redo of Healer Ep. 1',
+    slug: 'redo-of-healer-1',
+    tags: ['action', 'fantasy', 'dark-fantasy'],
+    views: 950000,
+    rating: 8.9,
+  },
+  {
+    id: '8',
+    title: 'Interspecies Reviewers Ep. 1',
+    slug: 'interspecies-reviewers-1',
+    tags: ['comedy', 'fantasy', 'demons'],
+    views: 680000,
+    rating: 8.3,
+  },
 ];
 
-const TEST_TAGS = ['ntr', 'milf', 'fantasy', 'harem', 'classic', 'school', 'action', 'dark'];
+const ALL_TAGS = [
+  'ntr', 'milf', 'fantasy', 'harem', 'classic', 'school',
+  'action', 'dark', 'comedy', 'horror', 'romance', 'demons',
+  'gangbang', 'cheating', 'occult', 'dark-fantasy', 'dark-skin', 'housewife',
+];
 
 type Video = typeof TEST_VIDEOS[0];
 
-const { width, height } = Dimensions.get('window');
-const IS_TV = Platform.isTV || false;
+// ============================================================================
+// ANIMATED HOOK — Reusable spring animation for focus states
+// ============================================================================
+function useFocusAnimation(scaleTo: number) {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const shadowAnim = useRef(new Animated.Value(0)).current;
+  const borderAnim = useRef(new Animated.Value(0)).current;
 
-// ============================================================================
-// FOCUSABLE WRAPPER - Composant avec focus TV ultra-visible
-// ============================================================================
-interface FocusableProps {
-  children: React.ReactNode;
-  style?: any;
-  onFocus?: () => void;
-  onBlur?: () => void;
-  onPress: () => void;
-  testID?: string;
+  const animateIn = useCallback(() => {
+    Animated.parallel([
+      Animated.timing(scaleAnim, {
+        toValue: scaleTo,
+        duration: ANIM_DURATION,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(shadowAnim, {
+        toValue: 1,
+        duration: ANIM_DURATION,
+        useNativeDriver: false,
+      }),
+      Animated.timing(borderAnim, {
+        toValue: 1,
+        duration: ANIM_DURATION,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [scaleTo, scaleAnim, shadowAnim, borderAnim]);
+
+  const animateOut = useCallback(() => {
+    Animated.parallel([
+      Animated.timing(scaleAnim, {
+        toValue: 1,
+        duration: ANIM_DURATION,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(shadowAnim, {
+        toValue: 0,
+        duration: ANIM_DURATION,
+        useNativeDriver: false,
+      }),
+      Animated.timing(borderAnim, {
+        toValue: 0,
+        duration: ANIM_DURATION,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [scaleAnim, shadowAnim, borderAnim]);
+
+  return { scaleAnim, shadowAnim, borderAnim, animateIn, animateOut };
 }
 
-const Focusable: React.FC<FocusableProps> = ({
-  children,
-  style,
-  onFocus,
-  onBlur,
-  onPress,
-  testID
+// ============================================================================
+// TAG CHIP COMPONENT — Netflix-style pill chips with multi-select long-press
+// ============================================================================
+interface TagChipProps {
+  tag: string;
+  selected: boolean;
+  multiSelectMode: boolean;
+  onToggle: () => void;
+  onLongPress: () => void;
+}
+
+const TagChip: React.FC<TagChipProps> = ({
+  tag,
+  selected,
+  multiSelectMode,
+  onToggle,
+  onLongPress,
 }) => {
   const [focused, setFocused] = useState(false);
-  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const { scaleAnim, animateIn, animateOut } = useFocusAnimation(FOCUS_SCALE_TAG);
+  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    Animated.spring(scaleAnim, {
-      toValue: focused ? FOCUS_SCALE : 1,
-      friction: 8,
-      tension: 100,
-      useNativeDriver: true,
-    }).start();
-  }, [focused]);
+    return () => {
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    };
+  }, []);
+
+  const handleFocus = () => {
+    setFocused(true);
+    animateIn();
+  };
+
+  const handleBlur = () => {
+    setFocused(false);
+    animateOut();
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const handlePressIn = () => {
+    // Start long-press timer
+    longPressTimer.current = setTimeout(() => {
+      onLongPress();
+      longPressTimer.current = null;
+    }, LONG_PRESS_DURATION);
+  };
+
+  const handlePressOut = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  // Dynamic colors based on state
+  const chipBg = selected
+    ? COLORS.primary
+    : focused
+      ? COLORS.surfaceHover
+      : COLORS.surfaceLight;
+  const chipBorder = multiSelectMode
+    ? COLORS.multiSelect
+    : focused
+      ? COLORS.white
+      : 'transparent';
+  const chipBorderWidth = focused ? 3 : selected ? 2 : 1;
 
   return (
-    <TouchableOpacity
-      testID={testID}
-      style={[
-        style,
-        focused && styles.focusableFocused,
-      ]}
-      onPress={onPress}
-      onFocus={() => {
-        setFocused(true);
-        onFocus?.();
-      }}
-      onBlur={() => {
-        setFocused(false);
-        onBlur?.();
-      }}
-      activeOpacity={0.9}
-      hasTVPreferredFocus={false}
-    >
-      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-        {children}
-      </Animated.View>
-      {/* Indicateur de focus visible */}
-      {focused && <View style={styles.focusIndicator} />}
-    </TouchableOpacity>
+    <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+      <TouchableOpacity
+        style={[
+          styles.tagChip,
+          {
+            backgroundColor: chipBg,
+            borderColor: chipBorder,
+            borderWidth: chipBorderWidth,
+          },
+          multiSelectMode && styles.tagChipMultiSelect,
+          selected && styles.tagChipSelected,
+        ]}
+        onPress={onToggle}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        activeOpacity={0.7}
+      >
+        {/* Checkmark for multi-select + selected */}
+        {multiSelectMode && selected && (
+          <View style={styles.checkmarkCircle}>
+            <Text style={styles.checkmarkText}>✓</Text>
+          </View>
+        )}
+        <Text
+          style={[
+            styles.tagChipText,
+            selected && styles.tagChipTextSelected,
+            focused && styles.tagChipTextFocused,
+            multiSelectMode && styles.tagChipTextMulti,
+          ]}
+        >
+          {tag}
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
   );
 };
 
 // ============================================================================
-// WEBVIEW PLAYER SCREEN - Avec bouton retour accessible
+// VIDEO CARD COMPONENT — Netflix-style with prominent focus cadre
+// ============================================================================
+interface VideoCardProps {
+  video: Video;
+  onSelect: () => void;
+  index: number;
+  isFocused: boolean;
+  onFocusIn: () => void;
+  onFocusOut: () => void;
+}
+
+const VideoCard: React.FC<VideoCardProps> = ({
+  video,
+  onSelect,
+  index,
+  isFocused,
+  onFocusIn,
+  onFocusOut,
+}) => {
+  const { scaleAnim, shadowAnim, borderAnim, animateIn, animateOut } = useFocusAnimation(FOCUS_SCALE_CARD);
+
+  useEffect(() => {
+    if (isFocused) {
+      animateIn();
+    } else {
+      animateOut();
+    }
+  }, [isFocused]);
+
+  // Interpolate shadow for smooth glow effect
+  const shadowOpacity = shadowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.9],
+  });
+  const shadowRadius = shadowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 25],
+  });
+  const elevation = shadowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [2, 20],
+  });
+
+  const borderColorValue = borderAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['#222222', COLORS.primary],
+  });
+
+  return (
+    <Animated.View
+      style={[
+        styles.cardWrapper,
+        {
+          transform: [{ scale: scaleAnim }],
+          shadowColor: COLORS.primary,
+          shadowOpacity,
+          shadowRadius,
+          elevation,
+        },
+      ]}
+    >
+      <TouchableOpacity
+        style={[
+          styles.videoCard,
+          {
+            borderColor: borderColorValue,
+          },
+        ]}
+        onPress={onSelect}
+        onFocus={onFocusIn}
+        onBlur={onFocusOut}
+        activeOpacity={0.9}
+        hasTVPreferredFocus={index === 0}
+      >
+        {/* Thumbnail */}
+        <View style={styles.thumbnail}>
+          <Text style={styles.thumbnailIcon}>🎬</Text>
+
+          {/* Rating badge */}
+          <View style={styles.ratingBadge}>
+            <Text style={styles.ratingText}>{video.rating}</Text>
+          </View>
+
+          {/* Duration badge placeholder */}
+          <View style={styles.durationBadge}>
+            <Text style={styles.durationText}>HD</Text>
+          </View>
+
+          {/* Play overlay on focus */}
+          {isFocused && (
+            <Animated.View style={styles.playOverlay}>
+              <View style={styles.playButtonCircle}>
+                <Text style={styles.playIcon}>▶</Text>
+              </View>
+            </Animated.View>
+          )}
+        </View>
+
+        {/* Card Info */}
+        <View style={styles.cardInfo}>
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {video.title}
+          </Text>
+          <Text style={styles.cardViews}>
+            {(video.views / 1000000).toFixed(1)}M vues
+          </Text>
+          <View style={styles.cardTags}>
+            {video.tags.slice(0, 3).map((tag, i) => (
+              <View key={i} style={styles.miniTag}>
+                <Text style={styles.miniTagText}>{tag}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* "Appuyez pour lire" label on focus — Netflix style bottom bar */}
+        {isFocused && (
+          <View style={styles.focusLabelBar}>
+            <Text style={styles.focusLabelText}>OK ▶ Lire</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
+
+// ============================================================================
+// MULTI-SELECT ACTION BAR — Plex-style bottom bar for batch actions
+// ============================================================================
+interface MultiSelectBarProps {
+  selectedCount: number;
+  onDeselectAll: () => void;
+  onApply: () => void;
+  onExit: () => void;
+}
+
+const MultiSelectBar: React.FC<MultiSelectBarProps> = ({
+  selectedCount,
+  onDeselectAll,
+  onApply,
+  onExit,
+}) => {
+  const [focusedBtn, setFocusedBtn] = useState<string | null>(null);
+
+  return (
+    <View style={styles.multiSelectBar}>
+      <View style={styles.multiSelectBarInner}>
+        <View style={styles.multiSelectInfo}>
+          <View style={styles.multiSelectDot} />
+          <Text style={styles.multiSelectInfoText}>
+            Mode multi-sélection — {selectedCount} tag{selectedCount > 1 ? 's' : ''} sélectionné{selectedCount > 1 ? 's' : ''}
+          </Text>
+        </View>
+
+        <View style={styles.multiSelectActions}>
+          <TouchableOpacity
+            style={[
+              styles.msButton,
+              focusedBtn === 'clear' && styles.msButtonFocused,
+            ]}
+            onPress={onDeselectAll}
+            onFocus={() => setFocusedBtn('clear')}
+            onBlur={() => setFocusedBtn(null)}
+          >
+            <Text style={styles.msButtonText}>Tout effacer</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.msButton,
+              styles.msButtonPrimary,
+              focusedBtn === 'apply' && styles.msButtonPrimaryFocused,
+            ]}
+            onPress={onApply}
+            onFocus={() => setFocusedBtn('apply')}
+            onBlur={() => setFocusedBtn(null)}
+          >
+            <Text style={styles.msButtonPrimaryText}>Appliquer ({selectedCount})</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.msButton,
+              focusedBtn === 'exit' && styles.msButtonFocused,
+            ]}
+            onPress={onExit}
+            onFocus={() => setFocusedBtn('exit')}
+            onBlur={() => setFocusedBtn(null)}
+          >
+            <Text style={styles.msButtonText}>✕ Quitter</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+};
+
+// ============================================================================
+// WEBVIEW PLAYER SCREEN
 // ============================================================================
 interface WebViewPlayerProps {
   video: Video;
@@ -154,19 +509,16 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
 
   const videoUrl = `https://hanime.tv/videos/hentai/${video.slug}`;
 
-  // Gestion du bouton Back matériel (télécommande)
   useEffect(() => {
     backHandlerRef.current = BackHandler.addEventListener('hardwareBackPress', () => {
       onBack();
-      return true; // Empêche la fermeture de l'app
+      return true;
     });
-
     return () => {
       backHandlerRef.current?.remove();
     };
   }, [onBack]);
 
-  // Timeout pour le chargement
   useEffect(() => {
     timeoutRef.current = setTimeout(() => {
       if (loading) {
@@ -175,38 +527,25 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
         setError('Délai de chargement dépassé (30s)');
       }
     }, LOADING_TIMEOUT);
-
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [loading]);
 
-  // Inject JavaScript for better TV experience
   const injectedJS = `
     (function() {
-      // Hide distracting elements
       const style = document.createElement('style');
       style.innerHTML = \`
         .ad-container, .popup, .modal-overlay, .banner, .adsbygoogle {
           display: none !important;
         }
-        video {
-          max-width: 100% !important;
-        }
-        body {
-          overflow-x: hidden !important;
-        }
+        video { max-width: 100% !important; }
+        body { overflow-x: hidden !important; }
       \`;
       document.head.appendChild(style);
-
-      // Auto-play video if possible
       setTimeout(() => {
         const video = document.querySelector('video');
-        if (video) {
-          video.play().catch(() => {});
-        }
+        if (video) video.play().catch(() => {});
       }, 2000);
     })();
     true;
@@ -221,23 +560,28 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
 
   return (
     <View style={styles.playerContainer}>
-      {/* Header toujours visible */}
+      {/* Header */}
       <View style={styles.playerHeader}>
         <TouchableOpacity
-          style={[styles.backButton, styles.backButtonFocused]}
+          style={styles.backButton}
           onPress={onBack}
           activeOpacity={0.7}
+          hasTVPreferredFocus
         >
-          <Text style={styles.backButtonText}>← RETOUR BIBLIOTHÈQUE</Text>
+          <Text style={styles.backButtonArrow}>←</Text>
+          <Text style={styles.backButtonText}>RETOUR</Text>
         </TouchableOpacity>
-        <Text style={styles.playerTitle} numberOfLines={1}>{video.title}</Text>
+        <View style={styles.playerHeaderInfo}>
+          <Text style={styles.playerTitle} numberOfLines={1}>{video.title}</Text>
+          <Text style={styles.playerSubtitle}>Hanime.tv</Text>
+        </View>
       </View>
 
-      {/* Loading avec indicateur de progression */}
+      {/* Loading */}
       {loading && !timeoutReached && (
         <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#e50914" />
-          <Text style={styles.loadingText}>Chargement Hanime.tv...</Text>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>Chargement...</Text>
           <Text style={styles.loadingSubtext}>{videoUrl}</Text>
           <View style={styles.loadingBar}>
             <View style={styles.loadingBarInner} />
@@ -248,25 +592,19 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
       {/* Error */}
       {error && (
         <View style={styles.errorOverlay}>
-          <Text style={styles.errorIcon}>⚠️</Text>
+          <Text style={styles.errorIcon}>!</Text>
           <Text style={styles.errorText}>Erreur de chargement</Text>
           <Text style={styles.errorDetail}>{error}</Text>
-          <TouchableOpacity
-            style={styles.retryButton}
-            onPress={handleRetry}
-          >
+          <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
             <Text style={styles.retryButtonText}>Réessayer</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.backLink}
-            onPress={onBack}
-          >
-            <Text style={styles.backLinkText}>← Retour à la bibliothèque</Text>
+          <TouchableOpacity style={styles.backLink} onPress={onBack}>
+            <Text style={styles.backLinkText}>← Retour</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* WebView - Only renders on native (not web) */}
+      {/* WebView */}
       {Platform.OS !== 'web' ? (
         <WebView
           ref={webViewRef}
@@ -278,9 +616,7 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
           }}
           onLoadEnd={() => {
             setLoading(false);
-            if (timeoutRef.current) {
-              clearTimeout(timeoutRef.current);
-            }
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
           }}
           onError={(e) => {
             setError(e.nativeEvent.description);
@@ -306,7 +642,6 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
           incognito={false}
         />
       ) : (
-        /* Web fallback - iframe for browser testing */
         <View style={styles.webView}>
           <iframe
             src={videoUrl}
@@ -317,142 +652,55 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
         </View>
       )}
 
-      {/* Controls hint - Toujours visible en bas */}
+      {/* Controls hint */}
       <View style={styles.controlsHint}>
-        <View style={styles.controlsHintInner}>
-          <Text style={styles.controlsText}>
-            🎮 Télécommande: Bouton ← RETOUR pour revenir | OK pour sélectionner
-          </Text>
-        </View>
+        <Text style={styles.controlsText}>
+          ← RETOUR pour revenir à la bibliothèque
+        </Text>
       </View>
     </View>
   );
 };
 
 // ============================================================================
-// VIDEO CARD COMPONENT - Avec focus TV ultra-visible
-// ============================================================================
-interface VideoCardProps {
-  video: Video;
-  onSelect: () => void;
-  index: number;
-}
-
-const VideoCard: React.FC<VideoCardProps> = ({ video, onSelect, index }) => {
-  const [focused, setFocused] = useState(false);
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    Animated.spring(scaleAnim, {
-      toValue: focused ? 1.08 : 1,
-      friction: 8,
-      tension: 100,
-      useNativeDriver: true,
-    }).start();
-  }, [focused]);
-
-  return (
-    <TouchableOpacity
-      style={[
-        styles.videoCard,
-        focused && styles.videoCardFocused
-      ]}
-      onPress={onSelect}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      activeOpacity={0.9}
-      hasTVPreferredFocus={index === 0}
-    >
-      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-        {/* Thumbnail */}
-        <View style={styles.thumbnail}>
-          <Text style={styles.thumbnailIcon}>🎬</Text>
-          <View style={styles.ratingBadge}>
-            <Text style={styles.ratingText}>⭐ {video.rating}</Text>
-          </View>
-          {focused && (
-            <View style={styles.playOverlay}>
-              <Text style={styles.playIcon}>▶</Text>
-            </View>
-          )}
-        </View>
-
-        {/* Info */}
-        <View style={styles.cardInfo}>
-          <Text style={styles.cardTitle} numberOfLines={2}>{video.title}</Text>
-          <Text style={styles.cardViews}>{(video.views / 1000000).toFixed(1)}M vues</Text>
-          <View style={styles.cardTags}>
-            {video.tags.slice(0, 2).map((tag, i) => (
-              <View key={i} style={styles.miniTag}>
-                <Text style={styles.miniTagText}>{tag}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      </Animated.View>
-
-      {/* Indicateur de focus ultra-visible */}
-      {focused && (
-        <View style={styles.cardFocusGlow} pointerEvents="none">
-          <Text style={styles.focusedLabel}>APPUYEZ POUR LIRE</Text>
-        </View>
-      )}
-    </TouchableOpacity>
-  );
-};
-
-// ============================================================================
-// TAG CHIP COMPONENT - Avec focus visible
-// ============================================================================
-interface TagChipProps {
-  tag: string;
-  selected: boolean;
-  onToggle: () => void;
-}
-
-const TagChip: React.FC<TagChipProps> = ({ tag, selected, onToggle }) => {
-  const [focused, setFocused] = useState(false);
-
-  return (
-    <TouchableOpacity
-      style={[
-        styles.tagChip,
-        selected && styles.tagChipSelected,
-        focused && styles.tagChipFocused,
-      ]}
-      onPress={onToggle}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      activeOpacity={0.7}
-    >
-      <Text style={[
-        styles.tagChipText,
-        selected && styles.tagChipTextSelected,
-        focused && { fontWeight: 'bold' }
-      ]}>
-        {tag}
-      </Text>
-    </TouchableOpacity>
-  );
-};
-
-// ============================================================================
-// MAIN HOME SCREEN
+// MAIN HOME SCREEN — Netflix-style browsing
 // ============================================================================
 const HomeScreen: React.FC = () => {
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
 
-  // Filter videos
-  const filteredVideos = selectedTags.length === 0
-    ? TEST_VIDEOS
-    : TEST_VIDEOS.filter(v => selectedTags.some(tag => v.tags.includes(tag)));
+  // Filter videos based on selected tags
+  const filteredVideos =
+    selectedTags.length === 0
+      ? TEST_VIDEOS
+      : TEST_VIDEOS.filter((v) => selectedTags.some((tag) => v.tags.includes(tag)));
 
-  // Toggle tag
+  // Toggle a single tag
   const toggleTag = (tag: string) => {
-    setSelectedTags(prev =>
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-    );
+    if (multiSelectMode) {
+      setSelectedTags((prev) =>
+        prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+      );
+    } else {
+      // Single toggle mode (Netflix-style: one tap to select/deselect)
+      setSelectedTags((prev) =>
+        prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+      );
+    }
+  };
+
+  // Long-press on a tag activates multi-select mode
+  const activateMultiSelect = (tag: string) => {
+    setMultiSelectMode(true);
+    // Auto-select the long-pressed tag if not already selected
+    setSelectedTags((prev) => (prev.includes(tag) ? prev : [...prev, tag]));
+  };
+
+  // Exit multi-select mode
+  const exitMultiSelect = () => {
+    setMultiSelectMode(false);
   };
 
   // If video selected, show player
@@ -465,56 +713,99 @@ const HomeScreen: React.FC = () => {
     );
   }
 
-  // Main screen
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      {/* Header */}
+      {/* ================================================================== */}
+      {/* HEADER — Netflix-style branded header                              */}
+      {/* ================================================================== */}
       <View style={styles.header}>
-        <Text style={styles.logo}>🎬 HenVideo</Text>
-        <Text style={styles.subtitle}>
-          {filteredVideos.length} vidéo{filteredVideos.length > 1 ? 's' : ''} disponible{filteredVideos.length > 1 ? 's' : ''}
-        </Text>
-        {IS_TV && (
-          <View style={styles.tvBadge}>
-            <Text style={styles.tvBadgeText}>📺 Mode TV</Text>
+        <View style={styles.headerRow}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.logo}>HenVideo</Text>
+            {IS_TV && (
+              <View style={styles.tvBadge}>
+                <Text style={styles.tvBadgeText}>TV</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.headerRight}>
+            <Text style={styles.videoCount}>
+              {filteredVideos.length} vidéo{filteredVideos.length !== 1 ? 's' : ''}
+            </Text>
+          </View>
+        </View>
+
+        {/* Multi-select mode banner */}
+        {multiSelectMode && (
+          <View style={styles.multiSelectBanner}>
+            <Text style={styles.multiSelectBannerText}>
+              Mode multi-sélection actif — Long-press OK sur un tag pour ajouter
+            </Text>
           </View>
         )}
       </View>
 
-      {/* Tags */}
+      {/* ================================================================== */}
+      {/* TAGS SECTION — Horizontal scrollable pill chips (Netflix "Chips")   */}
+      {/* ================================================================== */}
       <View style={styles.tagsSection}>
-        <Text style={styles.sectionTitle}>Catégories</Text>
+        <View style={styles.tagsHeader}>
+          <Text style={styles.sectionTitle}>
+            Catégories
+            {selectedTags.length > 0 && (
+              <Text style={styles.tagCount}> ({selectedTags.length} active{selectedTags.length > 1 ? 's' : ''})</Text>
+            )}
+          </Text>
+          {!multiSelectMode && (
+            <TouchableOpacity
+              style={styles.multiSelectBtn}
+              onPress={() => setMultiSelectMode(true)}
+            >
+              <Text style={styles.multiSelectBtnText}>Multi-sélection</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           style={styles.tagsScroll}
+          contentContainerStyle={styles.tagsScrollContent}
         >
-          {TEST_TAGS.map((tag) => (
+          {ALL_TAGS.map((tag) => (
             <TagChip
               key={tag}
               tag={tag}
               selected={selectedTags.includes(tag)}
+              multiSelectMode={multiSelectMode}
               onToggle={() => toggleTag(tag)}
+              onLongPress={() => activateMultiSelect(tag)}
             />
           ))}
+
           {selectedTags.length > 0 && (
             <TouchableOpacity
               style={styles.clearButton}
               onPress={() => setSelectedTags([])}
             >
-              <Text style={styles.clearButtonText}>✕ Effacer</Text>
+              <Text style={styles.clearButtonText}>✕ Effacer tout</Text>
             </TouchableOpacity>
           )}
         </ScrollView>
       </View>
 
-      {/* Videos Grid */}
+      {/* ================================================================== */}
+      {/* VIDEOS GRID — Poster card layout (Netflix/Plex style)               */}
+      {/* ================================================================== */}
       <View style={styles.videosSection}>
         <Text style={styles.sectionTitle}>
-          {selectedTags.length > 0 ? 'Résultats' : 'Populaire'}
+          {selectedTags.length > 0
+            ? `Résultats pour: ${selectedTags.join(', ')}`
+            : 'Tendances'}
         </Text>
+
         <FlatList
           data={filteredVideos}
           keyExtractor={(item) => item.id}
@@ -524,6 +815,11 @@ const HomeScreen: React.FC = () => {
               video={item}
               onSelect={() => setSelectedVideo(item)}
               index={index}
+              isFocused={focusedCardId === item.id}
+              onFocusIn={() => setFocusedCardId(item.id)}
+              onFocusOut={() => {
+                if (focusedCardId === item.id) setFocusedCardId(null);
+              }}
             />
           )}
           contentContainerStyle={styles.videoGrid}
@@ -532,193 +828,284 @@ const HomeScreen: React.FC = () => {
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>🔍</Text>
               <Text style={styles.emptyText}>Aucune vidéo trouvée</Text>
+              <Text style={styles.emptySubtext}>
+                Essayez de modifier vos filtres
+              </Text>
             </View>
           }
         />
       </View>
 
-      {/* Footer avec instructions TV */}
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>
-          🎮 Navigation: Flèches pour bouger | OK pour sélectionner | RETOUR pour quitter
-        </Text>
-        <Text style={styles.footerSubtext}>
-          {Platform.OS === 'web' ? '🌐 Web' : Platform.OS === 'android' ? '🤖 Android' : '📱 iOS'}
-          {IS_TV && ' • 📺 TV Optimisé'}
-        </Text>
-      </View>
+      {/* ================================================================== */}
+      {/* MULTI-SELECT ACTION BAR — Plex-style bottom bar                     */}
+      {/* ================================================================== */}
+      {multiSelectMode && (
+        <MultiSelectBar
+          selectedCount={selectedTags.length}
+          onDeselectAll={() => setSelectedTags([])}
+          onApply={exitMultiSelect}
+          onExit={exitMultiSelect}
+        />
+      )}
+
+      {/* ================================================================== */}
+      {/* FOOTER — Navigation hint                                           */}
+      {/* ================================================================== */}
+      {!multiSelectMode && (
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>
+            Flèches ◄►▲▼ naviguer  |  OK sélectionner  |  Long-press OK multi-sélection  |  RETOUR quitter
+          </Text>
+        </View>
+      )}
     </View>
   );
 };
 
 // ============================================================================
-// STYLES - Optimisés pour TV
+// STYLES — Netflix/Plex/Disney+ inspired 10-foot TV UI
 // ============================================================================
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0a0a',
-    paddingTop: Platform.OS === 'android' ? 0 : 10,
+    backgroundColor: COLORS.bg,
   },
 
-  // Focus styles
-  focusableFocused: {
-    borderColor: '#e50914',
-    borderWidth: FOCUS_BORDER_WIDTH,
-    shadowColor: '#e50914',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 15,
-    elevation: 10,
-  },
-  focusIndicator: {
-    position: 'absolute',
-    top: -2,
-    left: -2,
-    right: -2,
-    bottom: -2,
-    borderRadius: 12,
-    borderWidth: 3,
-    borderColor: '#e50914',
-  },
-
-  // Header
+  // ==================== HEADER ====================
   header: {
-    padding: 20,
-    paddingTop: Platform.OS === 'web' ? 20 : 50,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: COLORS.surface,
+    paddingTop: Platform.OS === 'web' ? 16 : 48,
+    paddingBottom: 12,
+    paddingHorizontal: 24,
     borderBottomWidth: 1,
-    borderBottomColor: '#333',
+    borderBottomColor: COLORS.border,
   },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  headerRight: {},
   logo: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#e50914',
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#888',
-    marginTop: 5,
+    fontSize: 28,
+    fontWeight: '900',
+    color: COLORS.primary,
+    letterSpacing: 1,
   },
   tvBadge: {
-    position: 'absolute',
-    right: 20,
-    top: 25,
-    backgroundColor: '#2a2a2a',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 5,
+    backgroundColor: COLORS.surfaceLight,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: '#4ade80',
+    borderColor: COLORS.multiSelect,
   },
   tvBadgeText: {
-    color: '#4ade80',
-    fontSize: 12,
-    fontWeight: 'bold',
+    color: COLORS.multiSelect,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  videoCount: {
+    color: COLORS.textSecondary,
+    fontSize: 14,
+  },
+  multiSelectBanner: {
+    marginTop: 10,
+    backgroundColor: COLORS.multiSelectBg,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.multiSelect,
+  },
+  multiSelectBannerText: {
+    color: COLORS.multiSelect,
+    fontSize: 13,
+    fontWeight: '600',
   },
 
-  // Tags
+  // ==================== TAGS ====================
   tagsSection: {
-    paddingVertical: 15,
-    backgroundColor: '#141414',
+    backgroundColor: COLORS.surface,
+    paddingTop: 14,
+    paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#222',
+    borderBottomColor: COLORS.border,
   },
-  sectionTitle: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
-    paddingHorizontal: 20,
+  tagsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 24,
     marginBottom: 10,
   },
+  sectionTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  tagCount: {
+    color: COLORS.primary,
+    fontSize: 14,
+  },
+  multiSelectBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: COLORS.surfaceLight,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  multiSelectBtnText: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
   tagsScroll: {
-    paddingLeft: 15,
+    paddingHorizontal: 0,
   },
-  tagChip: {
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 25,
-    backgroundColor: '#333',
-    marginRight: 8,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  tagChipSelected: {
-    backgroundColor: '#e50914',
-    borderColor: '#ff6b6b',
-  },
-  tagChipFocused: {
-    borderColor: '#fff',
-    backgroundColor: '#444',
-    transform: [{ scale: 1.1 }],
-  },
-  tagChipText: {
-    color: '#fff',
-    fontSize: 14,
-  },
-  tagChipTextSelected: {
-    fontWeight: 'bold',
-  },
-  clearButton: {
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 25,
-    backgroundColor: '#444',
-    marginRight: 15,
-  },
-  clearButtonText: {
-    color: '#fff',
-    fontSize: 14,
+  tagsScrollContent: {
+    paddingHorizontal: 16,
+    alignItems: 'center',
   },
 
-  // Videos
+  // Tag chip — Netflix "Chips and Facets" style
+  tagChip: {
+    height: 44,
+    paddingHorizontal: 20,
+    borderRadius: 22,          // Pill shape
+    backgroundColor: COLORS.surfaceLight,
+    marginRight: 10,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 60,
+  },
+  tagChipSelected: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primaryLight,
+  },
+  tagChipMultiSelect: {
+    borderWidth: 2,
+    borderColor: COLORS.multiSelect,
+  },
+  tagChipFocused: {
+    borderColor: COLORS.white,
+  },
+  tagChipText: {
+    color: COLORS.textPrimary,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  tagChipTextSelected: {
+    color: COLORS.white,
+    fontWeight: '700',
+  },
+  tagChipTextFocused: {
+    fontWeight: '700',
+  },
+  tagChipTextMulti: {
+    color: COLORS.multiSelect,
+  },
+  checkmarkCircle: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: COLORS.multiSelect,
+    marginRight: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkmarkText: {
+    color: '#000',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  clearButton: {
+    height: 44,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    backgroundColor: COLORS.surfaceHover,
+    marginRight: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  clearButtonText: {
+    color: COLORS.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  // ==================== VIDEO CARDS ====================
   videosSection: {
     flex: 1,
-    padding: 10,
+    paddingHorizontal: 20,
+    paddingTop: 16,
   },
   videoGrid: {
     paddingBottom: 20,
   },
-  videoCard: {
-    width: (width - 30) / 2,
-    margin: 5,
-    borderRadius: 12,
-    backgroundColor: '#1a1a1a',
-    overflow: 'hidden',
-    borderWidth: 3,
-    borderColor: 'transparent',
+  cardWrapper: {
+    margin: 6,
   },
-  videoCardFocused: {
-    borderColor: '#e50914',
-    shadowColor: '#e50914',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 20,
-    elevation: 15,
+  videoCard: {
+    width: (width - 56) / 2,    // 2 columns with proper spacing
+    borderRadius: CARD_BORDER_RADIUS,
+    backgroundColor: COLORS.surface,
+    overflow: 'hidden',
+    borderWidth: FOCUS_BORDER_WIDTH,
+    borderColor: '#222222',      // Default invisible-ish border for layout stability
   },
   thumbnail: {
     aspectRatio: 16 / 9,
-    backgroundColor: '#333',
+    backgroundColor: COLORS.surfaceLight,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
   },
   thumbnailIcon: {
-    fontSize: 45,
+    fontSize: 40,
   },
   ratingBadge: {
     position: 'absolute',
-    top: 5,
-    right: 5,
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    top: 8,
+    left: 8,
+    backgroundColor: 'rgba(0,0,0,0.85)',
     paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  ratingText: {
+    color: COLORS.gold,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  durationBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    paddingHorizontal: 6,
     paddingVertical: 3,
     borderRadius: 4,
   },
-  ratingText: {
-    color: '#ffd700',
+  durationText: {
+    color: COLORS.textSecondary,
     fontSize: 11,
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
   playOverlay: {
     position: 'absolute',
@@ -726,91 +1113,170 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(229, 9, 20, 0.3)',
+    backgroundColor: 'rgba(229, 9, 20, 0.35)',
     justifyContent: 'center',
     alignItems: 'center',
   },
+  playButtonCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(229, 9, 20, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: COLORS.white,
+  },
   playIcon: {
-    fontSize: 50,
-    color: '#fff',
+    fontSize: 22,
+    color: COLORS.white,
+    marginLeft: 3,
   },
   cardInfo: {
     padding: 12,
   },
   cardTitle: {
-    color: '#fff',
+    color: COLORS.textPrimary,
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: 4,
+    lineHeight: 18,
   },
   cardViews: {
-    color: '#666',
+    color: COLORS.textMuted,
     fontSize: 12,
-    marginBottom: 6,
+    marginBottom: 8,
   },
   cardTags: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
   },
   miniTag: {
-    backgroundColor: '#333',
+    backgroundColor: COLORS.surfaceHover,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 4,
-    marginRight: 4,
   },
   miniTagText: {
-    color: '#888',
+    color: COLORS.textSecondary,
     fontSize: 10,
+    fontWeight: '500',
   },
-  cardFocusGlow: {
+  // Focus label bar at bottom of card — Netflix style
+  focusLabelBar: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(229, 9, 20, 0.9)',
-    paddingVertical: 8,
+    backgroundColor: 'rgba(229, 9, 20, 0.95)',
+    paddingVertical: 7,
     alignItems: 'center',
   },
-  focusedLabel: {
-    color: '#fff',
+  focusLabelText: {
+    color: COLORS.white,
     fontSize: 12,
-    fontWeight: 'bold',
+    fontWeight: '800',
+    letterSpacing: 1,
   },
 
-  // Empty
+  // ==================== MULTI-SELECT BAR ====================
+  multiSelectBar: {
+    backgroundColor: COLORS.surface,
+    borderTopWidth: 2,
+    borderTopColor: COLORS.multiSelect,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+  },
+  multiSelectBarInner: {
+    gap: 12,
+  },
+  multiSelectInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  multiSelectDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.multiSelect,
+  },
+  multiSelectInfoText: {
+    color: COLORS.multiSelect,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  multiSelectActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
+  },
+  msButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceLight,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  msButtonFocused: {
+    borderColor: COLORS.white,
+    backgroundColor: COLORS.surfaceHover,
+  },
+  msButtonPrimary: {
+    backgroundColor: COLORS.primary,
+  },
+  msButtonPrimaryFocused: {
+    borderColor: COLORS.white,
+    backgroundColor: COLORS.primaryLight,
+  },
+  msButtonText: {
+    color: COLORS.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  msButtonPrimaryText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // ==================== EMPTY STATE ====================
   emptyState: {
     alignItems: 'center',
-    paddingVertical: 50,
+    paddingVertical: 60,
   },
   emptyIcon: {
     fontSize: 60,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   emptyText: {
-    color: '#666',
+    color: COLORS.textSecondary,
     fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  emptySubtext: {
+    color: COLORS.textMuted,
+    fontSize: 14,
   },
 
-  // Footer
+  // ==================== FOOTER ====================
   footer: {
-    padding: 15,
-    backgroundColor: '#1a1a1a',
+    padding: 12,
+    backgroundColor: COLORS.surface,
     alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: '#333',
+    borderTopColor: COLORS.border,
   },
   footerText: {
-    color: '#888',
+    color: COLORS.textMuted,
     fontSize: 12,
     textAlign: 'center',
-    marginBottom: 4,
-  },
-  footerSubtext: {
-    color: '#555',
-    fontSize: 11,
   },
 
-  // Player
+  // ==================== PLAYER ====================
   playerContainer: {
     flex: 1,
     backgroundColor: '#000',
@@ -818,36 +1284,48 @@ const styles = StyleSheet.create({
   playerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 20,
-    paddingTop: Platform.OS === 'web' ? 20 : 50,
-    backgroundColor: 'rgba(0,0,0,0.9)',
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'web' ? 16 : 48,
+    paddingBottom: 16,
+    backgroundColor: 'rgba(0,0,0,0.95)',
     borderBottomWidth: 2,
-    borderBottomColor: '#e50914',
+    borderBottomColor: COLORS.primary,
     zIndex: 100,
   },
   backButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
     borderRadius: 8,
-    backgroundColor: '#333',
+    backgroundColor: COLORS.surfaceLight,
     marginRight: 20,
     borderWidth: 2,
     borderColor: 'transparent',
   },
-  backButtonFocused: {
-    borderColor: '#e50914',
-    backgroundColor: '#444',
+  backButtonArrow: {
+    color: COLORS.white,
+    fontSize: 18,
+    fontWeight: '700',
+    marginRight: 8,
   },
   backButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  playerHeaderInfo: {
+    flex: 1,
   },
   playerTitle: {
-    color: '#fff',
+    color: COLORS.white,
     fontSize: 18,
-    fontWeight: '600',
-    flex: 1,
+    fontWeight: '700',
+  },
+  playerSubtitle: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    marginTop: 2,
   },
   webView: {
     flex: 1,
@@ -864,20 +1342,20 @@ const styles = StyleSheet.create({
     zIndex: 50,
   },
   loadingText: {
-    color: '#fff',
+    color: COLORS.white,
     marginTop: 20,
     fontSize: 18,
     fontWeight: '600',
   },
   loadingSubtext: {
-    color: '#666',
+    color: COLORS.textMuted,
     marginTop: 8,
     fontSize: 11,
   },
   loadingBar: {
     width: 200,
     height: 4,
-    backgroundColor: '#333',
+    backgroundColor: COLORS.surfaceLight,
     borderRadius: 2,
     marginTop: 20,
     overflow: 'hidden',
@@ -885,7 +1363,8 @@ const styles = StyleSheet.create({
   loadingBarInner: {
     width: '60%',
     height: '100%',
-    backgroundColor: '#e50914',
+    backgroundColor: COLORS.primary,
+    borderRadius: 2,
   },
   errorOverlay: {
     position: 'absolute',
@@ -900,56 +1379,50 @@ const styles = StyleSheet.create({
     padding: 30,
   },
   errorIcon: {
-    fontSize: 60,
+    fontSize: 50,
+    color: COLORS.primary,
+    fontWeight: '900',
     marginBottom: 15,
   },
   errorText: {
-    color: '#e50914',
+    color: COLORS.primary,
     fontSize: 22,
-    fontWeight: 'bold',
+    fontWeight: '700',
     marginBottom: 10,
   },
   errorDetail: {
-    color: '#888',
+    color: COLORS.textSecondary,
     fontSize: 14,
     textAlign: 'center',
     marginBottom: 25,
   },
   retryButton: {
     paddingHorizontal: 30,
-    paddingVertical: 15,
-    backgroundColor: '#e50914',
+    paddingVertical: 14,
+    backgroundColor: COLORS.primary,
     borderRadius: 8,
     marginBottom: 15,
   },
   retryButtonText: {
-    color: '#fff',
+    color: COLORS.white,
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
   backLink: {
     padding: 10,
   },
   backLinkText: {
-    color: '#888',
+    color: COLORS.textMuted,
     fontSize: 14,
   },
   controlsHint: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    backgroundColor: 'rgba(0,0,0,0.85)',
     padding: 10,
-    zIndex: 100,
-  },
-  controlsHintInner: {
     alignItems: 'center',
   },
   controlsText: {
-    color: '#aaa',
-    fontSize: 13,
-    textAlign: 'center',
+    color: COLORS.textMuted,
+    fontSize: 12,
   },
 });
 
