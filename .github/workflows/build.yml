@@ -38,25 +38,39 @@ jobs:
         working-directory: ./henvideo-app
         run: npx expo prebuild --platform android --clean
 
-      - name: Bundle JavaScript for Android
-        working-directory: ./henvideo-app
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file index.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res
-
-      - name: Build Debug APK
+      - name: Generate release signing key
         working-directory: ./henvideo-app/android
         run: |
+          keytool -genkeypair -v \
+            -keystore release.keystore \
+            -alias henvideo \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass henvideo123 \
+            -keypass henvideo123 \
+            -dname "CN=HenVideo,OU=Dev,O=HenVideo,L=MTL,ST=QC,C=CA"
+
+      - name: Build Release APK
+        working-directory: ./henvideo-app/android
+        env:
+          MYAPP_UPLOAD_STORE_FILE: release.keystore
+          MYAPP_UPLOAD_STORE_PASSWORD: henvideo123
+          MYAPP_UPLOAD_KEY_ALIAS: henvideo
+          MYAPP_UPLOAD_KEY_PASSWORD: henvideo123
+        run: |
+          # Configure signing in build.gradle for release builds
+          cd app
+          # Add signing config before buildTypes if not present
+          if ! grep -q "signingConfigs" build.gradle; then
+            sed -i '/buildTypes {/i\    signingConfigs {\n        release {\n            storeFile file("../release.keystore")\n            storePassword System.getenv("MYAPP_UPLOAD_STORE_PASSWORD")\n            keyAlias System.getenv("MYAPP_UPLOAD_KEY_ALIAS")\n            keyPassword System.getenv("MYAPP_UPLOAD_KEY_PASSWORD")\n        }\n    }\n' build.gradle
+          fi
+          # Add signingConfig to release build type
+          sed -i 's/buildType release {/buildType release {\n            signingConfig signingConfigs.release/' build.gradle
+          cd ..
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --parallel
+          ./gradlew assembleRelease --no-daemon --parallel
 
       - name: Rename APK
-        run: mv henvideo-app/android/app/build/outputs/apk/debug/app-debug.apk henvideo-app/HenVideo-v2.apk
+        run: mv henvideo-app/android/app/build/outputs/apk/release/app-release.apk henvideo-app/HenVideo-v2.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
