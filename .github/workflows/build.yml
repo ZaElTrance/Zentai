@@ -34,12 +34,20 @@ jobs:
         working-directory: ./henvideo-app
         run: npm ci || npm install
 
-      - name: Install Expo CLI
-        run: npm install -g expo-cli
-
       - name: Prebuild native project
         working-directory: ./henvideo-app
         run: npx expo prebuild --platform android --clean
+
+      - name: Bundle JavaScript for Android
+        working-directory: ./henvideo-app
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res
 
       - name: Build Debug APK
         working-directory: ./henvideo-app/android
