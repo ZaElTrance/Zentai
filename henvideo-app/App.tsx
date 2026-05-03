@@ -8,7 +8,7 @@ import {
   Dimensions,
   Platform,
   ActivityIndicator,
-  SafeAreaView,
+  // SafeAreaView removed - deprecated on Android TV edge-to-edge (API 36)
   ScrollView,
   BackHandler,
   Animated,
@@ -467,7 +467,7 @@ const HomeScreen: React.FC = () => {
 
   // Main screen
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <StatusBar style="light" />
 
       {/* Header */}
@@ -547,7 +547,7 @@ const HomeScreen: React.FC = () => {
           {IS_TV && ' • 📺 TV Optimisé'}
         </Text>
       </View>
-    </SafeAreaView>
+    </View>
   );
 };
 
@@ -558,6 +558,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0a0a0a',
+    paddingTop: Platform.OS === 'android' ? 0 : 10,
   },
 
   // Focus styles
