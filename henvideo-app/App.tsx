@@ -5,13 +5,11 @@ import {
   View,
   TouchableOpacity,
   FlatList,
-  Dimensions,
+  useWindowDimensions,
   Platform,
   ActivityIndicator,
   ScrollView,
   BackHandler,
-  Animated,
-  Easing,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { StatusBar } from 'expo-status-bar';
@@ -22,7 +20,6 @@ import { StatusBar } from 'expo-status-bar';
 const LOADING_TIMEOUT = 30000;
 const LONG_PRESS_DURATION = 500;     // Long-press threshold (ms)
 
-const { width } = Dimensions.get('window');
 const IS_TV = Platform.isTV || false;
 
 // ============================================================================
@@ -278,7 +275,7 @@ const VideoCard: React.FC<VideoCardProps> = ({
       >
         {/* Thumbnail */}
         <View style={styles.thumbnail}>
-          <Text style={styles.thumbnailIcon}>🎬</Text>
+          <Text style={styles.thumbnailIcon}>PLAY</Text>
 
           {/* Rating badge */}
           <View style={styles.ratingBadge}>
@@ -565,10 +562,14 @@ const WebViewPlayer: React.FC<WebViewPlayerProps> = ({ video, onBack }) => {
 // MAIN HOME SCREEN — Netflix-style browsing
 // ============================================================================
 const HomeScreen: React.FC = () => {
+  const { width } = useWindowDimensions();
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
+
+  // Stable callback to prevent BackHandler listener churn
+  const handleBackFromPlayer = useCallback(() => setSelectedVideo(null), []);
 
   // Filter videos based on selected tags
   const filteredVideos =
@@ -599,7 +600,7 @@ const HomeScreen: React.FC = () => {
     return (
       <WebViewPlayer
         video={selectedVideo}
-        onBack={() => setSelectedVideo(null)}
+        onBack={handleBackFromPlayer}
       />
     );
   }
@@ -692,6 +693,7 @@ const HomeScreen: React.FC = () => {
 
         <FlatList
           data={filteredVideos}
+          key={selectedTags.length}
           keyExtractor={(item) => item.id}
           numColumns={2}
           renderItem={({ item, index }) => (
@@ -710,7 +712,7 @@ const HomeScreen: React.FC = () => {
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>🔍</Text>
+              <Text style={styles.emptyIcon}>?</Text>
               <Text style={styles.emptyText}>Aucune vidéo trouvée</Text>
               <Text style={styles.emptySubtext}>
                 Essayez de modifier vos filtres
@@ -936,7 +938,7 @@ const styles = StyleSheet.create({
     margin: 6,
   },
   videoCard: {
-    width: (width - 56) / 2,
+    width: '48%',
     borderRadius: 14,
     backgroundColor: COLORS.surface,
     overflow: 'hidden',
@@ -949,7 +951,10 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   thumbnailIcon: {
-    fontSize: 40,
+    fontSize: 16,
+    fontWeight: '900',
+    color: COLORS.textMuted,
+    letterSpacing: 2,
   },
   ratingBadge: {
     position: 'absolute',
