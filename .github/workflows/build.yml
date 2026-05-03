@@ -13,15 +13,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 2. SETUP TOOLS (with built-in caching)
-      # ============================================================
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
@@ -29,7 +23,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: henvideo-app/package-lock.json
 
-      - name: Setup Java 17 (with Gradle cache)
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -43,53 +37,25 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # ============================================================
-      # 3. NPM INSTALL (cached by setup-node)
-      # ============================================================
       - name: Install dependencies
         working-directory: ./henvideo-app
         run: npm ci || npm install
 
-      # ============================================================
-      # 4. EXPO PREBUILD — only if native deps changed
-      #    Cache the entire android/ folder based on package-lock hash.
-      #    If only App.tsx changed → restore cache, skip prebuild (~90s saved)
-      # ============================================================
-      - name: Compute prebuild cache key
-        id: prebuild-cache
+      - name: Patch SDK version (36 → 35 for compatibility)
         working-directory: ./henvideo-app
-        run: |
-          # Key = hash of package-lock.json + app.json (native deps definition)
-          # If these didn't change, android/ folder is identical
-          CACHE_KEY=$(sha256sum package-lock.json 2>/dev/null | cut -c1-16)
-          echo "key=prebuild-${CACHE_KEY}" >> "$GITHUB_OUTPUT"
-          echo "Prebuild cache key: prebuild-${CACHE_KEY}"
-
-      - name: Cache prebuild output (android/)
-        id: cache-prebuild
-        uses: actions/cache@v4
-        with:
-          path: henvideo-app/android
-          key: ${{ steps.prebuild-cache.outputs.key }}
-          restore-keys: |
-            prebuild-
+        run: bash scripts/patch-sdk-version.sh
 
       - name: Prebuild native project
-        if: steps.cache-prebuild.outputs.cache-hit != 'true'
         working-directory: ./henvideo-app
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Prebuild cached notice
-        if: steps.cache-prebuild.outputs.cache-hit == 'true'
-        run: echo "✅ android/ restored from cache — skipping expo prebuild (~90s saved)"
+      - name: Patch node_modules for Gradle 8.14 compatibility
+        working-directory: ./henvideo-app
+        run: bash scripts/patch-gradle-compat.sh
 
-      # ============================================================
-      # 5. GRADLE BUILD (cached by setup-java + build cache)
-      # ============================================================
       - name: Generate release signing key
         working-directory: ./henvideo-app/android
         run: |
-          # Only regenerate if keystore doesn't exist
           if [ ! -f release.keystore ]; then
             keytool -genkeypair -v \
               -keystore release.keystore \
@@ -98,23 +64,9 @@ jobs:
               -storepass henvideo123 \
               -keypass henvideo123 \
               -dname "CN=HenVideo,OU=Dev,O=HenVideo,L=MTL,ST=QC,C=CA"
-          else
-            echo "✅ Keystore already exists"
           fi
 
-      - name: Enable Gradle build cache
-        working-directory: ./henvideo-app/android
-        run: |
-          # Enable Gradle build cache for faster incremental builds
-          if ! grep -q "org.gradle.caching" gradle.properties; then
-            echo "org.gradle.caching=true" >> gradle.properties
-          fi
-          # Enable parallel execution (already in command, but also via properties)
-          if ! grep -q "org.gradle.parallel" gradle.properties; then
-            echo "org.gradle.parallel=true" >> gradle.properties
-          fi
-
-      - name: Build Release APK
+      - name: Configure signing
         working-directory: ./henvideo-app/android
         env:
           MYAPP_UPLOAD_STORE_FILE: release.keystore
@@ -128,18 +80,28 @@ jobs:
           fi
           sed -i 's/buildType release {/buildType release {\n            signingConfig signingConfigs.release/' build.gradle
           cd ..
+
+      - name: Build Release APK
+        working-directory: ./henvideo-app/android
+        run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --parallel
 
-      # ============================================================
-      # 6. ARTIFACT
-      # ============================================================
-      - name: Rename APK
-        run: mv henvideo-app/android/app/build/outputs/apk/release/app-release.apk henvideo-app/HenVideo-v4-release.apk
+      - name: Verify APK
+        run: |
+          APK="henvideo-app/android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then echo "❌ APK NOT FOUND"; exit 1; fi
+          SIZE=$(stat -c%s "$APK")
+          if [ "$SIZE" -lt 10000000 ]; then echo "❌ APK too small ($SIZE bytes)"; exit 1; fi
+          echo "✅ APK verified: $(($SIZE / 1048576))MB"
+
+      - name: Rename and upload APK
+        run: |
+          mv henvideo-app/android/app/build/outputs/apk/release/app-release.apk henvideo-app/HenVideo-v5-release.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: HenVideo-APK
-          path: henvideo-app/HenVideo-v4-release.apk
+          path: henvideo-app/HenVideo-v5-release.apk
           retention-days: 30
