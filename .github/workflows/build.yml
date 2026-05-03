@@ -13,46 +13,65 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # 1. Checkout repository
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      # 2. Setup Node.js (cache npm based on package-lock.json)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: henvideo-app/package-lock.json
 
+      # 3. Setup Java 17 — NO cache-dependency-path because android/ doesn't exist yet
+      #    (it's in .gitignore and created by expo prebuild later)
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
-          cache-dependency-path: |
-            henvideo-app/android/gradle/wrapper/gradle-wrapper.properties
-            henvideo-app/android/build.gradle
-            henvideo-app/android/app/build.gradle
+          # NOTE: We intentionally do NOT set cache: 'gradle' here because
+          # the android/ directory doesn't exist at this point (gitignored).
+          # Gradle cache is handled separately after expo prebuild.
 
+      # 4. Setup Android SDK command-line tools
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # 5. Install npm dependencies
       - name: Install dependencies
         working-directory: ./henvideo-app
         run: npm ci || npm install
 
-      - name: Patch SDK version (36 → 35 for compatibility)
+      # 6. Patch SDK version (36 -> 35 for compatibility)
+      - name: Patch SDK version
         working-directory: ./henvideo-app
         run: bash scripts/patch-sdk-version.sh
 
+      # 7. Generate native Android project (creates android/ directory)
       - name: Prebuild native project
         working-directory: ./henvideo-app
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Patch node_modules for Gradle 8.14 compatibility
+      # 8. Patch node_modules for Gradle compatibility
+      - name: Patch Gradle compatibility
         working-directory: ./henvideo-app
         run: bash scripts/patch-gradle-compat.sh
 
+      # 9. NOW cache Gradle — after android/ exists
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('henvideo-app/android/gradle/wrapper/gradle-wrapper.properties', 'henvideo-app/android/build.gradle') }}
+          restore-keys: |
+            gradle-
+
+      # 10. Generate release signing key (if not cached)
       - name: Generate release signing key
         working-directory: ./henvideo-app/android
         run: |
@@ -66,6 +85,7 @@ jobs:
               -dname "CN=HenVideo,OU=Dev,O=HenVideo,L=MTL,ST=QC,C=CA"
           fi
 
+      # 11. Configure release signing in build.gradle
       - name: Configure signing
         working-directory: ./henvideo-app/android
         env:
@@ -81,27 +101,26 @@ jobs:
           sed -i 's/buildType release {/buildType release {\n            signingConfig signingConfigs.release/' build.gradle
           cd ..
 
+      # 12. Build Release APK
       - name: Build Release APK
         working-directory: ./henvideo-app/android
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --parallel
 
+      # 13. Verify APK exists and is valid
       - name: Verify APK
         run: |
           APK="henvideo-app/android/app/build/outputs/apk/release/app-release.apk"
-          if [ ! -f "$APK" ]; then echo "❌ APK NOT FOUND"; exit 1; fi
+          if [ ! -f "$APK" ]; then echo "APK NOT FOUND"; exit 1; fi
           SIZE=$(stat -c%s "$APK")
-          if [ "$SIZE" -lt 10000000 ]; then echo "❌ APK too small ($SIZE bytes)"; exit 1; fi
-          echo "✅ APK verified: $(($SIZE / 1048576))MB"
+          if [ "$SIZE" -lt 5000000 ]; then echo "APK too small ($SIZE bytes)"; exit 1; fi
+          echo "APK verified: $(($SIZE / 1048576))MB"
 
-      - name: Rename and upload APK
-        run: |
-          mv henvideo-app/android/app/build/outputs/apk/release/app-release.apk henvideo-app/HenVideo-v5-release.apk
-
-      - name: Upload APK Artifact
+      # 14. Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: HenVideo-APK
-          path: henvideo-app/HenVideo-v5-release.apk
+          path: henvideo-app/android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30

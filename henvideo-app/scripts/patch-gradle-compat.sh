@@ -1,23 +1,42 @@
 #!/bin/bash
-# Patch Gradle compatibility issues in node_modules for Gradle 8.14 + AGP 8.11
-# Fixes "Cannot query the value of this provider" caused by lazy Provider resolution.
+# Patch SDK version and Gradle compatibility issues for the build environment.
+# This script is safe to run on both CI (GitHub Actions) and local sandbox.
+#
+# Changes made:
+# 1. Patch version catalog: compileSdk/targetSdk/buildTools 36 -> 35
+# 2. Patch react-native-webview: fix lazy Provider resolution
+# 3. Patch expo-modules-core: skip NDK/CXX if NDK not available
 
 set -e
 cd "$(dirname "$0")/.."
 
-echo "🔧 Patching Gradle compatibility..."
+echo "🔧 Patching SDK versions and Gradle compatibility..."
 
+# ============================================================================
+# 1. Patch version catalog: SDK 36 -> 35
+# ============================================================================
+TOML_FILE="node_modules/react-native/gradle/libs.versions.toml"
+if [ -f "$TOML_FILE" ]; then
+  sed -i 's/compileSdk = "36"/compileSdk = "35"/g' "$TOML_FILE"
+  sed -i 's/targetSdk = "36"/targetSdk = "35"/g' "$TOML_FILE"
+  sed -i 's/buildTools = "36.0.0"/buildTools = "35.0.0"/g' "$TOML_FILE"
+  echo "  ✅ Version catalog patched to SDK 35"
+else
+  echo "  ⚠️  Version catalog not found"
+fi
+
+# ============================================================================
+# 2. Patch react-native-webview: fix lazy Provider resolution
+# ============================================================================
 python3 << 'PYEOF'
 import re, os
 
-def patch_webview():
-    wv = "node_modules/react-native-webview/android/build.gradle"
-    if not os.path.exists(wv):
-        print("  ⚠️  react-native-webview not found")
-        return
+wv = "node_modules/react-native-webview/android/build.gradle"
+if not os.path.exists(wv):
+    print("  ⚠️  react-native-webview not found")
+else:
     with open(wv, 'r') as f:
         content = f.read()
-    # Remove old getExtOrIntegerDefault (any version) and replace with clean one
     clean_func = '''def getExtOrIntegerDefault(prop) {
   def propKey = 'ReactNativeWebView_' + prop
   if (project.hasProperty(propKey)) {
@@ -43,17 +62,117 @@ def patch_webview():
         print(f"  ❌ react-native-webview: UNBALANCED BRACES ({opens} vs {closes})")
     else:
         print("  ✅ react-native-webview patched")
+PYEOF
 
-def patch_core_plugin():
-    core = "node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle"
-    if not os.path.exists(core):
-        print("  ⚠️  ExpoModulesCorePlugin not found")
-        return
+# ============================================================================
+# 3. Patch expo-modules-core: skip CXX if NDK not available
+#    This is only needed in environments without a full NDK install.
+#    On GitHub Actions, NDK is auto-installed, so this is a no-op there.
+# ============================================================================
+NDK_PATH="${ANDROID_HOME:-$HOME/Android/Sdk}/ndk"
+if [ -d "$NDK_PATH" ]; then
+  # Check if NDK actually has toolchains (real install vs fake)
+  HAS_REAL_NDK=false
+  for ndk_dir in "$NDK_PATH"/*/; do
+    if [ -f "$ndk_dir/source.properties" ] && [ -d "$ndk_dir/toolchains" ]; then
+      # Check if toolchains has actual binaries
+      if find "$ndk_dir/toolchains" -name "llvm-strip" -o -name "clang" 2>/dev/null | head -1 | grep -q .; then
+        HAS_REAL_NDK=true
+        break
+      fi
+    fi
+  done
+
+  if [ "$HAS_REAL_NDK" = true ]; then
+    echo "  ✅ Real NDK found — skipping CXX patch"
+  else
+    echo "  ⚠️  Fake/incomplete NDK detected — patching expo-modules-core to skip CXX"
+    python3 << 'PYEOF'
+import os
+
+ec_build = "node_modules/expo-modules-core/android/build.gradle"
+if not os.path.exists(ec_build):
+    print("    ⚠️  expo-modules-core not found")
+else:
+    with open(ec_build, 'r') as f:
+        content = f.read()
+
+    original = content
+
+    # Comment out NDK version settings
+    content = content.replace(
+        "if (rootProject.hasProperty(\"ndkPath\")) {\n    ndkPath rootProject.ext.ndkPath\n  }",
+        "// NDK disabled for TV build (NDK not available)\n  // if (rootProject.hasProperty(\"ndkPath\")) {\n  //   ndkPath rootProject.ext.ndkPath\n  // }"
+    )
+    content = content.replace(
+        "if (rootProject.hasProperty(\"ndkVersion\")) {\n    ndkVersion rootProject.ext.ndkVersion\n  }",
+        "// if (rootProject.hasProperty(\"ndkVersion\")) {\n  //   ndkVersion rootProject.ext.ndkVersion\n  // }"
+    )
+
+    # Comment out externalNativeBuild cmake block
+    import re
+    cmake_pattern = r'(externalNativeBuild\s*\{[^}]*cmake\s*\{[^}]*\}[^}]*\})'
+    content = re.sub(cmake_pattern, '// CXX disabled for TV build (NDK not available)', content, flags=re.DOTALL)
+
+    if content != original:
+        with open(ec_build, 'w') as f:
+            f.write(content)
+        print("    ✅ expo-modules-core patched (CXX disabled)")
+    else:
+        print("    ✅ expo-modules-core already patched")
+PYEOF
+  fi
+else
+  echo "  ⚠️  No NDK found — patching expo-modules-core to skip CXX"
+  python3 << 'PYEOF'
+import os, re
+
+ec_build = "node_modules/expo-modules-core/android/build.gradle"
+if not os.path.exists(ec_build):
+    print("    ⚠️  expo-modules-core not found")
+else:
+    with open(ec_build, 'r') as f:
+        content = f.read()
+
+    original = content
+
+    # Comment out NDK settings
+    content = content.replace(
+        'if (rootProject.hasProperty("ndkPath")) {',
+        '// NDK disabled for TV build\n  // if (rootProject.hasProperty("ndkPath")) {'
+    )
+    content = content.replace(
+        'if (rootProject.hasProperty("ndkVersion")) {',
+        '// if (rootProject.hasProperty("ndkVersion")) {'
+    )
+
+    # Comment out externalNativeBuild cmake block
+    cmake_pattern = r'(externalNativeBuild\s*\{[^}]*cmake\s*\{[^}]*\}[^}]*\})'
+    content = re.sub(cmake_pattern, '// CXX disabled for TV build (NDK not available)', content, flags=re.DOTALL)
+
+    if content != original:
+        with open(ec_build, 'w') as f:
+            f.write(content)
+        print("    ✅ expo-modules-core patched (CXX disabled)")
+    else:
+        print("    ✅ expo-modules-core already patched")
+PYEOF
+fi
+
+# ============================================================================
+# 4. Patch ExpoModulesCorePlugin: fix lazy Provider resolution
+# ============================================================================
+python3 << 'PYEOF'
+import os
+
+core = "node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle"
+if not os.path.exists(core):
+    print("  ⚠️  ExpoModulesCorePlugin not found")
+else:
     with open(core, 'r') as f:
         content = f.read()
     orig = 'project.rootProject.ext.has(prop) ? project.rootProject.ext.get(prop) : fallback'
     if orig in content:
-        print("  ⚠️  ExpoModulesCorePlugin needs patching (unpatched original found)")
         new_impl = '''if (project.rootProject.ext.has(prop)) {
         def val = project.rootProject.ext.get(prop)
         if (val instanceof Integer || val instanceof Long) return val
@@ -67,12 +186,18 @@ def patch_core_plugin():
         print("  ✅ ExpoModulesCorePlugin patched")
     else:
         print("  ✅ ExpoModulesCorePlugin already patched")
+PYEOF
 
-def patch_expo():
-    expo = "node_modules/expo/android/build.gradle"
-    if not os.path.exists(expo):
-        print("  ⚠️  expo/android not found")
-        return
+# ============================================================================
+# 5. Patch expo/android: fix lazy Provider resolution
+# ============================================================================
+python3 << 'PYEOF'
+import os
+
+expo = "node_modules/expo/android/build.gradle"
+if not os.path.exists(expo):
+    print("  ⚠️  expo/android not found")
+else:
     with open(expo, 'r') as f:
         content = f.read()
     orig = 'rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback'
@@ -90,9 +215,6 @@ def patch_expo():
         print("  ✅ expo/android patched")
     else:
         print("  ✅ expo/android already patched")
-
-patch_webview()
-patch_core_plugin()
-patch_expo()
-print("✅ Gradle compatibility patching complete")
 PYEOF
+
+echo "✅ All patches applied successfully"
