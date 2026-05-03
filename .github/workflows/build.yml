@@ -39,7 +39,7 @@ jobs:
 
       - name: Prebuild native project
         working-directory: ./henvideo-app
-        run: npx expo prebuild --platform android --yes
+        run: npx expo prebuild --platform android --clean
 
       - name: Build Debug APK
         working-directory: ./henvideo-app/android
