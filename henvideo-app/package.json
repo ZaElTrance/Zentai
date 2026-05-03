@@ -10,6 +10,9 @@
     "build:preview": "eas build --platform android --profile preview",
     "build:production": "eas build --platform android --profile production"
   },
+  "devDependencies": {
+    "@react-native-community/cli": "^15.0.0"
+  },
   "dependencies": {
     "@types/react": "^19.2.14",
     "expo": "~54.0.33",
