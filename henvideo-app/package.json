@@ -18,6 +18,7 @@
     "@types/react": "^19.2.14",
     "expo": "~54.0.33",
     "expo-build-properties": "~0.14.6",
+    "expo-image": "~2.1.4",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-dom": "19.1.0",
