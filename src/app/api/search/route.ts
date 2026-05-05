@@ -1,16 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import videosData from '@/data/videos.json';
 
-let cachedVideos: any[] | null = null;
-
-async function getVideos(): Promise<any[]> {
-  if (cachedVideos) return cachedVideos;
-  const fs = await import('fs');
-  const path = await import('path');
-  const filePath = path.join(process.cwd(), 'src', 'data', 'videos.json');
-  const data = fs.readFileSync(filePath, 'utf-8');
-  cachedVideos = JSON.parse(data);
-  return cachedVideos!;
-}
+const allVideos = videosData as any[];
 
 export async function GET(request: NextRequest) {
   try {
@@ -20,7 +11,6 @@ export async function GET(request: NextRequest) {
 
     if (!q) return NextResponse.json({ results: [], query: '' });
 
-    const allVideos = await getVideos();
     const results: any[] = [];
 
     for (const v of allVideos) {

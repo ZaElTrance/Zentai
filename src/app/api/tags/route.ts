@@ -1,27 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
+import tagsData from '@/data/tags.json';
 
-let cachedTags: any[] | null = null;
-
-async function getTags(): Promise<any[]> {
-  if (cachedTags) return cachedTags;
-  const fs = await import('fs');
-  const path = await import('path');
-  const filePath = path.join(process.cwd(), 'src', 'data', 'tags.json');
-  const data = fs.readFileSync(filePath, 'utf-8');
-  const parsed = JSON.parse(data);
-  cachedTags = parsed.tags || [];
-  return cachedTags!;
-}
+const allTags = (tagsData as any).tags || [];
 
 export async function GET(request: NextRequest) {
   try {
-    const tags = await getTags();
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get('limit') || '100');
     const type = searchParams.get('type') || '';
 
-    let filtered = tags;
-    if (type) filtered = filtered.filter(t => t.type === type);
+    let filtered = allTags;
+    if (type) filtered = filtered.filter((t: any) => t.type === type);
 
     return NextResponse.json({
       tags: filtered.slice(0, limit),
