@@ -1,0 +1,10 @@
+name: Trigger Vercel Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel Deployment
+        run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
